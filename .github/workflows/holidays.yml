@@ -1,0 +1,38 @@
+# 공휴일 자동 갱신: 매주 월요일 새벽에 공개 공휴일 목록(우주항공청 월력요항 기반, holidays.hyunbin.page)을 받아
+# 사이트의 holidays.json 으로 저장합니다. 화면은 이 파일을 먼저 읽고, 없으면 원본 주소를 직접 시도, 그것도 안 되면 내장 목록을 씁니다.
+name: holidays
+on:
+  schedule:
+    - cron: '23 17 * * 0'   # 매주 월요일 02:23 (KST)
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 공휴일 받기
+        run: |
+          set -e
+          Y=$(date -u +%Y)
+          echo '{}' > all.json
+          for y in $((Y-1)) $Y $((Y+1)); do
+            if curl -fsS "https://holidays.hyunbin.page/$y.json" -o y.json; then
+              jq -s '.[0] * .[1]' all.json y.json > t.json && mv t.json all.json
+            fi
+          done
+          # 소스 저장소(public 폴더가 있으면) / 빌드 결과물 저장소(루트) 둘 다 지원
+          OUT=holidays.json; [ -d public ] && OUT=public/holidays.json
+          if [ "$(jq 'length' all.json)" -gt 0 ]; then
+            jq -n --slurpfile d all.json --arg u "$(date -u +%Y-%m-%d)" '{updated: $u, source: "holidays.hyunbin.page", dates: $d[0]}' > new.json
+            # 날짜 목록이 바뀐 경우만 저장
+            if [ ! -f "$OUT" ] || [ "$(jq -S .dates "$OUT")" != "$(jq -S .dates new.json)" ]; then mv new.json "$OUT"; fi
+          fi
+          rm -f all.json y.json new.json
+      - name: 바뀐 경우 커밋
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A holidays.json public/holidays.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "공휴일 목록 자동 갱신" && git push)
